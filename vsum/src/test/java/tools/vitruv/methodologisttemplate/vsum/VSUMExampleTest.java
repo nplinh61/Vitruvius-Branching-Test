@@ -1,4 +1,4 @@
-package tools.vitruv.branching.test.vsum;
+package tools.vitruv.methodologisttemplate.vsum;
 
 import java.nio.file.Path;
 import java.util.Collection;
@@ -23,9 +23,9 @@ import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModel;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
-import tools.vitruv.branching.test.model.model.ModelFactory;
-import tools.vitruv.branching.test.model.model.System;
-import tools.vitruv.branching.test.model.model2.Root;
+import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
+import tools.vitruv.methodologisttemplate.model.model.System;
+import tools.vitruv.methodologisttemplate.model.model2.Root;
 
 /**
  * This class provides an example how to define and use a VSUM.

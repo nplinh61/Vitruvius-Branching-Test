@@ -1,8 +1,7 @@
-package tools.vitruv.branching.test.vsum;
+package tools.vitruv.methodologisttemplate.vsum;
 
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
-import tools.vitruv.branching.test.model.model.ModelFactory;
-
+import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
 import java.nio.file.Path;
 import java.util.function.Consumer;
 import mir.reactions.model2Model2.Model2Model2ChangePropagationSpecification;

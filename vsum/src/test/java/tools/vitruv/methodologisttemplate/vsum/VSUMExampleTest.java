@@ -1,5 +1,6 @@
 package tools.vitruv.methodologisttemplate.vsum;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.List;
@@ -38,14 +39,14 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void reloadEmptyVirtualModel(@TempDir Path tempDir) {
+  void reloadEmptyVirtualModel(@TempDir Path tempDir) throws IOException {
     InternalVirtualModel vsum = createDefaultVirtualModel(tempDir);
     vsum.dispose();
     vsum = createDefaultVirtualModel(tempDir);
   }
 
   @Test
-  void reloadFilledVirtualModel(@TempDir Path tempDir) {
+  void reloadFilledVirtualModel(@TempDir Path tempDir) throws IOException {
     InternalVirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
     vsum.dispose();
@@ -56,7 +57,7 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void systemInsertionAndPropagationTest(@TempDir Path tempDir) {
+  void systemInsertionAndPropagationTest(@TempDir Path tempDir) throws IOException {
     VirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
     // assert that the directly added System is present
@@ -67,7 +68,7 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void insertComponent(@TempDir Path tempDir) {
+  void insertComponent(@TempDir Path tempDir) throws IOException {
     InternalVirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
     addComponent(vsum);
@@ -84,7 +85,7 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void insertRouter(@TempDir Path tempDir) {
+  void insertRouter(@TempDir Path tempDir) throws IOException {
     InternalVirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
     addRouter(vsum);
@@ -103,7 +104,7 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void renameComponent(@TempDir Path tempDir) {
+  void renameComponent(@TempDir Path tempDir) throws IOException {
     final String newName = "newName";
     VirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
@@ -123,7 +124,7 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void deleteComponent(@TempDir Path tempDir) {
+  void deleteComponent(@TempDir Path tempDir) throws IOException {
     VirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
     addComponent(vsum);
@@ -139,7 +140,7 @@ public class VSUMExampleTest {
   }
 
   @Test
-  void testLink(@TempDir Path tempDir) {
+  void testLink(@TempDir Path tempDir) throws IOException {
     VirtualModel vsum = createDefaultVirtualModel(tempDir);
     addSystem(vsum, tempDir);
 
@@ -203,7 +204,7 @@ public class VSUMExampleTest {
     });
   }
 
-  private InternalVirtualModel createDefaultVirtualModel(Path projectPath) {
+  private InternalVirtualModel createDefaultVirtualModel(Path projectPath) throws IOException {
     InternalVirtualModel model = new VirtualModelBuilder()
         .withStorageFolder(projectPath)
         .withUserInteractorForResultProvider(new TestUserInteraction.ResultProvider(new TestUserInteraction()))

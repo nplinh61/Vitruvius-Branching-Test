@@ -13,9 +13,9 @@ import tools.vitruv.change.testutils.TestUserInteraction;
 import tools.vitruv.framework.views.CommittableView;
 import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
-import tools.vitruv.framework.vsum.branch.GitHookInstaller;
-import tools.vitruv.framework.vsum.branch.ReloadTriggerFile;
-import tools.vitruv.framework.vsum.branch.VsumReloadWatcher;
+import tools.vitruv.framework.vsum.branch.util.GitHookInstaller;
+import tools.vitruv.framework.vsum.branch.util.ReloadTriggerFile;
+import tools.vitruv.framework.vsum.branch.handler.VsumReloadWatcher;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
 import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
 
@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * when developers use 'git checkout' from the command line.
  */
 class GitCheckoutIntegrationTest {
+    private static final String REQUEST_ID = "test-request-uuid-1234";
 
     @BeforeAll
     static void setup() {
@@ -46,7 +47,7 @@ class GitCheckoutIntegrationTest {
             
             // 2.step: create VSUM with a single MainComponent on main branch
             InternalVirtualModel vsum = createVirtualModel(tempDir);
-            addSystemWithComponent(vsum, tempDir, "MainComponent");
+            addSystemWithComponent(vsum, tempDir);
             // verify initial state
             CommittableView view = getDefaultView(vsum);
             assertEquals(1, view.getRootObjects(tools.vitruv.methodologisttemplate.model.model.System.class).size());
@@ -65,7 +66,7 @@ class GitCheckoutIntegrationTest {
             vsum.reload();
             // add different component on feature branch
             view = getDefaultView(vsum);
-            addComponentToView(view, "FeatureComponent");
+            addComponentToView(view);
             // commit on feature branch
             git.add().addFilepattern(".").call();
             git.commit().setMessage("Added FeatureComponent").call();
@@ -90,7 +91,7 @@ class GitCheckoutIntegrationTest {
             // manually create the trigger file to simulate post-checkout hook
             git.checkout().setName("main").call();
             var triggerFile = new ReloadTriggerFile(tempDir);
-            triggerFile.createTrigger();
+            triggerFile.createTrigger(REQUEST_ID);
             Thread.sleep(1500);
             
             // 7.step: verify if vsum is reloaded
@@ -104,7 +105,7 @@ class GitCheckoutIntegrationTest {
             // 8.step: switch back to feature branch
             git.checkout().setName("feature-test").call();
             // simulate hook execution again
-            triggerFile.createTrigger();
+            triggerFile.createTrigger(REQUEST_ID);
             Thread.sleep(1500);  
             view = getDefaultView(vsum);
             system = view.getRootObjects(tools.vitruv.methodologisttemplate.model.model.System.class).iterator().next();
@@ -132,11 +133,11 @@ class GitCheckoutIntegrationTest {
     /**
      * Creates a System with one Component and registers it in the VSUM.
      */
-    private void addSystemWithComponent(InternalVirtualModel vsum, Path projectPath, String componentName) {
+    private void addSystemWithComponent(InternalVirtualModel vsum, Path projectPath) {
         var view = getDefaultView(vsum).withChangeDerivingTrait();
         var system = ModelFactory.eINSTANCE.createSystem();
         var component = ModelFactory.eINSTANCE.createComponent();
-        component.setName(componentName);
+        component.setName("MainComponent");
         system.getComponents().add(component);
         view.registerRoot(system, URI.createFileURI(projectPath.toString() + "/example.model"));
         view.commitChanges();
@@ -145,10 +146,10 @@ class GitCheckoutIntegrationTest {
     /**
      * Adds a component to the system in the provided view.
      */
-    private void addComponentToView(CommittableView view, String componentName) {
+    private void addComponentToView(CommittableView view) {
         var system = view.getRootObjects(tools.vitruv.methodologisttemplate.model.model.System.class).iterator().next();
         var component = ModelFactory.eINSTANCE.createComponent();
-        component.setName(componentName);
+        component.setName("FeatureComponent");
         system.getComponents().add(component);
         view.commitChanges();
     }

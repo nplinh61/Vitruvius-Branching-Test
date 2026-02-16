@@ -19,7 +19,7 @@ import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModel;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
 import tools.vitruv.framework.vsum.branch.BranchManager;
-import tools.vitruv.framework.vsum.branch.PostCheckoutHandler;
+import tools.vitruv.framework.vsum.branch.handler.PostCheckoutHandler;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
 import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
 import tools.vitruv.methodologisttemplate.model.model.System;
@@ -88,7 +88,7 @@ public class BranchSwitchingIntegrationTest {
             view = getDefaultView(vsum);
 
             //5.Step: add new component on feature branch
-            addComponentToView(view, "FeatureComponent");
+            addComponentToView(view);
 
             //verify if the system now has 2 components
             view = getDefaultView(vsum);
@@ -115,13 +115,13 @@ public class BranchSwitchingIntegrationTest {
 
     /**
      * Adds a component with the given name to the system in the provided view.
+     *
      * @param view The view providing access to the model
-     * @param componentName Name for the new component
      */
-    private void addComponentToView(CommittableView view, String componentName) {
+    private void addComponentToView(CommittableView view) {
         var system = view.getRootObjects(System.class).iterator().next();
         var component = ModelFactory.eINSTANCE.createComponent();
-        component.setName(componentName);
+        component.setName("FeatureComponent");
         system.getComponents().add(component);
         view.commitChanges();
     }

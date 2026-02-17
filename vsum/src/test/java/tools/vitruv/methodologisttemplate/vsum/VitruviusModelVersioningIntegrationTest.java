@@ -7,6 +7,7 @@ import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.resource.Resource;
 import org.eclipse.emf.ecore.xmi.impl.XMIResourceFactoryImpl;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.MergeResult;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import tools.vitruv.change.propagation.ChangePropagationMode;
@@ -15,12 +16,11 @@ import tools.vitruv.framework.views.CommittableView;
 import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
 import tools.vitruv.framework.vsum.branch.data.ValidationResult;
+import tools.vitruv.framework.vsum.branch.handler.VsumMergeWatcher;
+import tools.vitruv.framework.vsum.branch.handler.VsumPostCommitWatcher;
 import tools.vitruv.framework.vsum.branch.handler.VsumReloadWatcher;
 import tools.vitruv.framework.vsum.branch.handler.VsumValidationWatcher;
-import tools.vitruv.framework.vsum.branch.util.GitHookInstaller;
-import tools.vitruv.framework.vsum.branch.util.ReloadTriggerFile;
-import tools.vitruv.framework.vsum.branch.util.ValidationResultFile;
-import tools.vitruv.framework.vsum.branch.util.ValidationTriggerFile;
+import tools.vitruv.framework.vsum.branch.util.*;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
 import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
 import tools.vitruv.methodologisttemplate.model.model.System;
@@ -40,21 +40,21 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <ol>
  *   <li>Vitruvius starts, installs both Git hooks, and launches both background watchers.</li>
- *   <li>Developer works on main: makes a model change and commits → pre-commit hook fires
- *       → VSUM validated → commit allowed → changelog written.</li>
- *   <li>Developer switches to a feature branch → post-checkout hook fires → VSUM reloads.</li>
- *   <li>Developer makes a model change on the feature branch and commits → pre-commit hook
- *       fires → VSUM validated → commit allowed → second changelog written.</li>
- *   <li>Developer switches back to main → post-checkout hook fires → VSUM reloads again.</li>
- *   <li>Developer makes a final commit on main → pre-commit hook fires → VSUM validated
- *       → commit allowed → third changelog written.</li>
+ *   <li>Developer works on main: makes a model change and commits -> pre-commit hook fires
+ *       -> VSUM validated -> commit allowed -> changelog written.</li>
+ *   <li>Developer switches to a feature branch -> post-checkout hook fires -> VSUM reloads.</li>
+ *   <li>Developer makes a model change on the feature branch and commits -> pre-commit hook
+ *       fires -> VSUM validated -> commit allowed -> second changelog written.</li>
+ *   <li>Developer switches back to main -> post-checkout hook fires -> VSUM reloads again.</li>
+ *   <li>Developer makes a final commit on main -> pre-commit hook fires -> VSUM validated
+ *       -> commit allowed -> third changelog written.</li>
  * </ol>
  *
  * <p>The one deliberate simplification throughout is that JGit does not execute shell
  * scripts during API calls. Trigger files are therefore written manually in each step
  * to simulate exactly what the installed hook scripts would do on the command line.
- * All other aspects — the real Git repository, real hook files on disk, real VSUM with
- * EMF model files, and both watchers running simultaneously — are genuine.
+ * All other aspects - the real Git repository, real hook files on disk, real VSUM with
+ * EMF model files, and both watchers running simultaneously - are genuine.
  */
 @DisplayName("Vitruvius model versioning: complete developer workflow")
 class VitruviusModelVersioningIntegrationTest {
@@ -74,6 +74,8 @@ class VitruviusModelVersioningIntegrationTest {
     private InternalVirtualModel vsum;
     private VsumReloadWatcher reloadWatcher;
     private VsumValidationWatcher validationWatcher;
+    private VsumMergeWatcher mergeWatcher;
+    private VsumPostCommitWatcher postCommitWatcher;
 
     @BeforeAll
     static void registerResourceFactory() {
@@ -104,6 +106,8 @@ class VitruviusModelVersioningIntegrationTest {
         // stop both watchers even if test failed to avoid thread leaks.
         if (validationWatcher != null) validationWatcher.stop();
         if (reloadWatcher != null) reloadWatcher.stop();
+        if (mergeWatcher != null) mergeWatcher.stop();
+        if (postCommitWatcher != null) postCommitWatcher.stop();
         if (git != null) git.close();
     }
 
@@ -127,12 +131,21 @@ class VitruviusModelVersioningIntegrationTest {
         assertTrue(preCommit.contains("validate-trigger"), "pre-commit hook must reference the validation trigger file correctly");
         String postCheckout = Files.readString(tempDir.resolve(".git/hooks/post-checkout"));
         assertTrue(postCheckout.contains("reload-trigger"), "post-checkout must reference the reload trigger file correctly");
+        String postCommit = Files.readString(tempDir.resolve(".git/hooks/post-commit"));
+        assertTrue(postCommit.contains("post-commit-trigger"), "post-commit hook must reference the post-commit trigger file");
+        String postMerge = Files.readString(tempDir.resolve(".git/hooks/post-merge"));
+        assertTrue(postMerge.contains("merge-trigger"), "post-merge hook must reference the post-merge trigger file");
 
         // start both watchers
         reloadWatcher = new VsumReloadWatcher(vsum, tempDir);
         validationWatcher = new VsumValidationWatcher(vsum, tempDir);
+        mergeWatcher = new VsumMergeWatcher(vsum, tempDir);
+        postCommitWatcher = new VsumPostCommitWatcher(tempDir);
+
         reloadWatcher.start();
         validationWatcher.start();
+        mergeWatcher.start();
+        postCommitWatcher.start();
 
         // make an initial commit since jgit requires one commit before any branch operation is possible
         // this commit has no Vitruvius involvement
@@ -162,10 +175,23 @@ class VitruviusModelVersioningIntegrationTest {
         ValidationResult result1 = resultFile.readResult(requestId1);
         assertNotNull(result1, "result must be written after the first validation");
         assertTrue(result1.isValid(), "the initial model must pass validation on master");
+        resultFile.deleteResult(requestId1);
 
-        // after a passing validation, VsumValidationWatcher automatically calls PreCommitHandler.generateChangelog(), which creates a SemanticChangelog and
-        // writes it to .vitruvius/changelogs/<shortSha>.txt as a permanent record of the VSUM state at the time of this commit.
-        Path changelog1 = changelogPath(COMMIT_SHA_MASTER_1);
+        // on the command line, the pre-commit hook exits 0 and Git creates the commit, assigning a real SHA.
+        // the post-commit hook then fires and write .vitruvius/post-commit-trigger with the real SHA from git rev-parse HEAD.
+        // we simulate this by making a real JGit commit and using its real SHA.
+        var commit1 = git.commit()
+                .setMessage("Add MainComponent")
+                .setAuthor("Test", "test@example.com")
+                .call();
+        String realSha1 = commit1.getName();
+        var postCommitTrigger = new PostCommitTriggerFile(tempDir);
+        postCommitTrigger.createTrigger(realSha1, BRANCH_MASTER);
+
+
+        // // in the background: VsumPostCommitWatcher detects the trigger (within 500ms), calls PostCommitHandler.generateChangelog() with the real SHA,
+        // and writes it to .vitruvius/changelogs/<shortSha>.txt as a permanent record of the VSUM state at the time of this commit.
+        Path changelog1 = changelogPath(realSha1);
         waitUntilFileExists(changelog1, 2000);
 
         assertTrue(Files.exists(changelog1), "a changelog must be written after the first passing validation on main");
@@ -173,7 +199,7 @@ class VitruviusModelVersioningIntegrationTest {
         String changelogContent1 = Files.readString(changelog1);
         // the file follows the git log --pretty=fuller layout defined in SemanticChangelog.writeTo().
         assertTrue(changelogContent1.contains("SEMANTIC CHANGELOG"), "changelog must contain the SEMANTIC CHANGELOG header");
-        assertTrue(changelogContent1.contains("Commit:     " + COMMIT_SHA_MASTER_1), "changelog must contain the full commit SHA");
+        assertTrue(changelogContent1.contains("Commit:     " + realSha1), "changelog must contain the full commit SHA");
         assertTrue(changelogContent1.contains("Branch:     " + BRANCH_MASTER), "changelog must contain the branch name");
         assertTrue(changelogContent1.contains("Author:"), "changelog must contain the author field");
         assertTrue(changelogContent1.contains("AuthorDate:"), "changelog must contain the author date field");
@@ -181,7 +207,6 @@ class VitruviusModelVersioningIntegrationTest {
         // the file changes section lists model files added, modified, or deleted in this commit
         assertTrue(changelogContent1.contains("FILE CHANGES"), "changelog must contain the FILE CHANGES section");
         assertTrue(changelogContent1.contains("No file changes detected."), "changelog must indicate no file changes until JGit diff integration is added");
-        resultFile.deleteResult(requestId1);
 
 
         //3.STEP: DEVELOPER SWITCHES TO A FEATURE BRANCH
@@ -194,7 +219,7 @@ class VitruviusModelVersioningIntegrationTest {
         reloadTrigger.createTrigger(BRANCH_FEAT);
 
         // in the background: VsumReloadWatcher detects the trigger file (within 500ms), calls PostCheckoutHandler.reload()
-        // -> VirtualModelImpl.reload() → ResourceRepositoryImpl -> reloads all .xmi model files from disk, then deletes the trigger file.
+        // -> VirtualModelImpl.reload() -> ResourceRepositoryImpl -> reloads all .xmi model files from disk, then deletes the trigger file.
         waitUntil(() -> !reloadTrigger.exists(), 2000);
         assertFalse(reloadTrigger.exists(), "reload trigger must be consumed by VsumReloadWatcher after the branch switch");
 
@@ -207,36 +232,46 @@ class VitruviusModelVersioningIntegrationTest {
         // the developer adds a feature-specific component
         // this change exists only on the feature branch and will be isolated from the main branch model state.
         modifyView(viewOnFeat, view -> {
-            var system    = view.getRootObjects(System.class).iterator().next();
+            var system = view.getRootObjects(System.class).iterator().next();
             var component = ModelFactory.eINSTANCE.createComponent();
             component.setName("FeatureComponent");
             system.getComponents().add(component);
         });
 
-        // same pre-commit flow as step 2: trigger written manually → VsumValidationWatcher
-        // validates the VSUM (now containing FeatureComponent) → result files written.
+        // same pre-commit flow as step 2: trigger written manually -> VsumValidationWatcher
+        // validates the VSUM (now containing FeatureComponent) -> result files written.
         String requestId2 = triggerFile.createTrigger(COMMIT_SHA_FEATURE_1, BRANCH_FEAT);
         waitForBothResultFiles(resultFile, requestId2);
 
         ValidationResult result2 = resultFile.readResult(requestId2);
         assertNotNull(result2, "result must be written after the feature branch validation");
         assertTrue(result2.isValid(), "the model with FeatureComponent must pass validation on the feature branch");
+        resultFile.deleteResult(requestId2);
+
+        // pre-commit passes -> Git creates the commit -> post-commit hook fires with real SHA.
+        // we simulate: make a real JGit commit, then write the post-commit trigger.
+        var commit2 = git.commit()
+                .setMessage("Add FeatureComponent")
+                .setAuthor("Test", "test@example.com")
+                .call();
+        String realSha2 = commit2.getName();
+
+        postCommitTrigger.createTrigger(realSha2, BRANCH_FEAT);
 
         // VsumValidationWatcher automatically writes a second changelog for this commit, independent of the first
         // each commit SHA maps to exactly one changelog file.
-        Path changelog2 = changelogPath(COMMIT_SHA_FEATURE_1);
+        Path changelog2 = changelogPath(realSha2);
         waitUntilFileExists(changelog2, 2000);
         assertTrue(Files.exists(changelog2), "a changelog must be written automatically for the feature branch commit");
         String changelogContent2 = Files.readString(changelog2);
         assertTrue(changelogContent2.contains("SEMANTIC CHANGELOG"), "feature changelog must contain the SEMANTIC CHANGELOG header");
-        assertTrue(changelogContent2.contains("Commit:     " + COMMIT_SHA_FEATURE_1), "feature changelog must contain the correct commit SHA");
+        assertTrue(changelogContent2.contains("Commit:     " + realSha2), "feature changelog must contain the correct commit SHA");
         assertTrue(changelogContent2.contains("Branch:     " + BRANCH_FEAT), "feature changelog must reference the feature branch name");
         assertTrue(changelogContent2.contains("FILE CHANGES"), "feature changelog must contain the FILE CHANGES section");
 
         // each commit produces a distinct changelog file named after its short SHA.
         assertNotEquals(changelog1, changelog2, "each commit must produce a distinct changelog file");
 
-        resultFile.deleteResult(requestId2);
 
         // 5.STEP: Developer switches back to master
         // same reload flow as step 3: real JGit checkout -> post-checkout hook simulated -> VsumReloadWatcher reloads the VSUM back to the main branch model state.
@@ -248,15 +283,6 @@ class VitruviusModelVersioningIntegrationTest {
         // fresh view required after the reload; the VSUM now reflects the main branch state, which does not include FeatureComponent
         CommittableView viewBackOnMain = getDefaultView(vsum);
         assertNotNull(viewBackOnMain, "a fresh view must be obtainable after the reload back to main");
-
-        // 6.STEP: DEVELOPER ADDS ANOTHER COMPONENT ON MAIN AND COMMITS
-        // a second model change on main, distinct from FeatureComponent which only exists on the feature branch, demonstrating branch-isolated model state.
-        modifyView(viewBackOnMain, view -> {
-            var system    = view.getRootObjects(System.class).iterator().next();
-            var component = ModelFactory.eINSTANCE.createComponent();
-            component.setName("MainComponent2");
-            system.getComponents().add(component);
-        });
 
         // 6.STEP: DEVELOPER ADDS ANOTHER COMPONENT ON MAIN AND COMMITS
         // a second model change on main, distinct from FeatureComponent which only exists on the feature branch, demonstrating branch-isolated model state.
@@ -275,32 +301,93 @@ class VitruviusModelVersioningIntegrationTest {
         ValidationResult result3 = resultFile.readResult(requestId3);
         assertNotNull(result3, "result must be written after the second main validation");
         assertTrue(result3.isValid(), "the model with MainComponent2 must pass validation after returning to main");
+        resultFile.deleteResult(requestId3);
 
-        // a third changelog is written automatically -> the changelogs directory now contains one file per commit, providing a complete version history of the VSUM state.
-        Path changelog3 = changelogPath(COMMIT_SHA_MASTER_2);
+        // pre-commit passes -> real JGit commit -> post-commit hook fires with real SHA
+        var commit3 = git.commit()
+                .setMessage("Add MainComponent2")
+                .setAuthor("Test", "test@example.com")
+                .call();
+        String realSha3 = commit3.getName();
+        postCommitTrigger.createTrigger(realSha3, BRANCH_MASTER);
+
+        // a third changelog is written
+        // the changelogs directory now contains one file per real commit, forming a complete and traceable VSUM version history.
+        Path changelog3 = changelogPath(realSha3);
         waitUntilFileExists(changelog3, 2000);
         assertTrue(Files.exists(changelog3), "a changelog must be written automatically for the second main commit");
         String changelogContent3 = Files.readString(changelog3);
-        assertTrue(changelogContent3.contains("Commit:     " + COMMIT_SHA_MASTER_2), "second main changelog must contain the correct commit SHA");
+        assertTrue(changelogContent3.contains("Commit:     " + realSha3), "second main changelog must contain the correct commit SHA");
         assertTrue(changelogContent3.contains("Branch:     " + BRANCH_MASTER), "second main changelog must reference the main branch");
 
         // the .vitruvius/changelogs/ directory now holds three independent files, one per commit SHA, forming the complete VSUM version history for this session.
         assertNotEquals(changelog1, changelog3, "the two main changelogs must be distinct files for different commits");
         assertNotEquals(changelog2, changelog3, "the feature and second main changelogs must be distinct files");
 
-        resultFile.deleteResult(requestId3);
 
+        // 7.STEP: developer merges the feature branch into master
+
+        //this is a real JGit merge: Git creates a merge commit with two parents, combining the model state from main and the feature branch.
+        //MergeResult gives us the real merge commit SHA so we can use it in the trigger file instead of a fake placeholder
+        MergeResult mergeOutcome  = git.merge()
+                .include(git.getRepository().resolve(BRANCH_FEAT))
+                .setMessage("merge feature-model-update into master")
+                .call();
+        // extract the real merge commit SHA from JGit, his is the actual SHA that Git assigned to the merge commit
+        String realMergeCommitSha = mergeOutcome.getNewHead().getName();
+        assertNotNull(realMergeCommitSha, "JGit must produce a real merge commit SHA after the merge completes");
+
+        // on command line, git merge would fire the post-merge hook script, which writes .vitruvius/merge-trigger containing the merge commit sha, source branch and target branch
+        // jgit does not execute hook scripts, so we need to write the trigger file manually here
+        var mergeTriggerFile = new MergeTriggerFile(tempDir);
+        var mergeResultFile = new MergeResultFile(tempDir);
+        String mergeRequestId = mergeTriggerFile.createTrigger(realMergeCommitSha, BRANCH_FEAT, BRANCH_MASTER);
+
+        // in the background: VsumMergeWatcher detects the trigger file within 500ms, calls PostMergeHandler.validate() against the real merged vsum state,
+        // writes the results files and writes permanent merge metadata record to .vitruvius/merges/<sha>.metadata
+        // unlike pre-commit, this is non-blocking as the merge is already complete regardless of the outcome
+        waitForMergeResultFiles(mergeResultFile, mergeRequestId, 3000);
+
+        // the post-merge hook reads the result and displays a warning report if needed.
+        // the result is always written - passing or failing - because the merge is done.
+        ValidationResult mergeResult = mergeResultFile.readResult(mergeRequestId);
+        assertNotNull(mergeResult, "merge result must be written after the merge trigger is processed");
+        assertTrue(mergeResult.isValid(), "the merged VSUM state combining main and feature components must be consistent");
+
+        // the permanent merge metadata file must be written to .vitruvius/merges/
+        // regardless of the validation outcome - it is the audit trail for the merge (MG-6).
+        assertTrue(mergeResultFile.metadataExists(realMergeCommitSha), "merge metadata must be written after the post-merge trigger is processed");
+
+        // read and verify the metadata content captures the full merge context.
+        var metadata = mergeResultFile.readMetadata(realMergeCommitSha);
+        assertNotNull(metadata, "merge metadata must be readable after being written");
+        assertEquals(realMergeCommitSha, metadata.get("mergeCommitSha"), "metadata must record the correct merge commit SHA");
+        assertEquals(BRANCH_FEAT, metadata.get("sourceBranch"), "metadata must record the feature branch as the source of the merge");
+        assertEquals(BRANCH_MASTER, metadata.get("targetBranch"), "metadata must record main as the target that received the merge");
+        assertEquals(true, metadata.get("valid"), "metadata must record that the merged state passed validation");
+
+        // the merge result files are request-scoped and cleaned up by the hook after reading.
+        // the metadata file is permanent and must not be deleted.
+        mergeResultFile.deleteResult(mergeRequestId);
+        assertTrue(mergeResultFile.metadataExists(realMergeCommitSha), "metadata file must survive result file cleanup - it is a permanent record");
     }
 
-    private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs)
-            throws InterruptedException {
+    private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs) throws InterruptedException {
         long deadline = java.lang.System.currentTimeMillis() + timeoutMs;
         while (!condition.getAsBoolean() && java.lang.System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
     }
 
-
+    private static void waitForMergeResultFiles(MergeResultFile resultFile, String requestId, long timeoutMs) throws InterruptedException {
+        long deadline = java.lang.System.currentTimeMillis() + timeoutMs;
+        while (java.lang.System.currentTimeMillis() < deadline) {
+            if (Files.exists(resultFile.getTextResultPath(requestId)) && Files.exists(resultFile.getJsonResultPath(requestId))) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+    }
     /**
      * Creates an initial Git commit so JGit can create and switch branches.
      * JGit requires at least one commit before branch operations are possible.

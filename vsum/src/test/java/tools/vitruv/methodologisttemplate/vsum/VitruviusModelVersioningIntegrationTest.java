@@ -15,11 +15,9 @@ import tools.vitruv.change.testutils.TestUserInteraction;
 import tools.vitruv.framework.views.CommittableView;
 import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
+import tools.vitruv.framework.vsum.branch.BranchManager;
 import tools.vitruv.framework.vsum.branch.data.ValidationResult;
-import tools.vitruv.framework.vsum.branch.handler.VsumMergeWatcher;
-import tools.vitruv.framework.vsum.branch.handler.VsumPostCommitWatcher;
-import tools.vitruv.framework.vsum.branch.handler.VsumReloadWatcher;
-import tools.vitruv.framework.vsum.branch.handler.VsumValidationWatcher;
+import tools.vitruv.framework.vsum.branch.handler.*;
 import tools.vitruv.framework.vsum.branch.util.*;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
 import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
@@ -58,8 +56,6 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @DisplayName("Vitruvius model versioning: complete developer workflow")
 class VitruviusModelVersioningIntegrationTest {
-
-    private static final Logger LOGGER = LogManager.getLogger(VitruviusModelVersioningIntegrationTest.class);
 
     private static final String COMMIT_SHA_MASTER_1 = "aaa1111111111111111111111111111111111111";
     private static final String COMMIT_SHA_FEATURE_1 = "bbb2222222222222222222222222222222222222";
@@ -182,7 +178,7 @@ class VitruviusModelVersioningIntegrationTest {
         // we simulate this by making a real JGit commit and using its real SHA.
         var commit1 = git.commit()
                 .setMessage("Add MainComponent")
-                .setAuthor("Test", "test@example.com")
+                .setAuthor("Vitruvius", "vitruv-dev@example.com")
                 .call();
         String realSha1 = commit1.getName();
         var postCommitTrigger = new PostCommitTriggerFile(tempDir);
@@ -252,7 +248,7 @@ class VitruviusModelVersioningIntegrationTest {
         // we simulate: make a real JGit commit, then write the post-commit trigger.
         var commit2 = git.commit()
                 .setMessage("Add FeatureComponent")
-                .setAuthor("Test", "test@example.com")
+                .setAuthor("Vitruvius", "vitruv-dev@example.com")
                 .call();
         String realSha2 = commit2.getName();
 
@@ -306,7 +302,7 @@ class VitruviusModelVersioningIntegrationTest {
         // pre-commit passes -> real JGit commit -> post-commit hook fires with real SHA
         var commit3 = git.commit()
                 .setMessage("Add MainComponent2")
-                .setAuthor("Test", "test@example.com")
+                .setAuthor("Vitruvius", "vitruv-dev@example.com")
                 .call();
         String realSha3 = commit3.getName();
         postCommitTrigger.createTrigger(realSha3, BRANCH_MASTER);
@@ -372,6 +368,250 @@ class VitruviusModelVersioningIntegrationTest {
         assertTrue(mergeResultFile.metadataExists(realMergeCommitSha), "metadata file must survive result file cleanup - it is a permanent record");
     }
 
+
+    /**
+     * Tests XMI merge conflict detection and post-merge validation.
+     *
+     * <p>This test demonstrates what happens when Git's text-based merge creates conflict
+     * markers inside VSUM model files. The scenario creates two branches that modify the
+     * same component in conflicting ways, forces Git to insert conflict markers into the
+     * XMI file, and verifies that the post-merge hook correctly detects and reports the
+     * invalid XML as a validation failure.
+     *
+     * <p>The workflow is:
+     * <ol>
+     *   <li>Create a base commit with a Component named "BaseComponent"</li>
+     *   <li>Branch A: rename BaseComponent to "ServiceA" and commit</li>
+     *   <li>Branch B: rename BaseComponent to "ServiceB" (from same base) and commit</li>
+     *   <li>Merge branch-a into branch-b → Git creates conflict markers in XMI</li>
+     *   <li>Post-merge validation detects the conflict markers and fails</li>
+     *   <li>Merge metadata is written with valid=false</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("Merge with XMI conflicts: conflict markers detected by post-merge validation")
+    void mergeWithXmiConflict() throws Exception {
+        var reloadTrigger = new ReloadTriggerFile(tempDir);
+        var triggerFile = new ValidationTriggerFile(tempDir);
+        var resultFile = new ValidationResultFile(tempDir);
+        var postCommitTrigger = new PostCommitTriggerFile(tempDir);
+        var mergeTrigger = new MergeTriggerFile(tempDir);
+        var mergeResultFile = new MergeResultFile(tempDir);
+
+        // install all four hooks and start all four watchers
+        new GitHookInstaller(tempDir).installAllHooks();
+        reloadWatcher = new VsumReloadWatcher(vsum, tempDir);
+        validationWatcher = new VsumValidationWatcher(vsum, tempDir);
+        postCommitWatcher = new VsumPostCommitWatcher(tempDir);
+        mergeWatcher = new VsumMergeWatcher(vsum, tempDir);
+        reloadWatcher.start();
+        validationWatcher.start();
+        postCommitWatcher.start();
+        mergeWatcher.start();
+
+        // create an initial commit since JGit requires one commit before branch operations
+        makeInitialCommit();
+
+        // initialize BranchManager with PostCheckoutHandler so that branch switches
+        // automatically trigger VSUM reloads via the handler callback
+        var branchMgr = new BranchManager(tempDir);
+        var postCheckoutHandler = new PostCheckoutHandler(vsum);
+        branchMgr.setPostCheckoutHandler(postCheckoutHandler);
+
+        // 1. STEP: CREATE BASE COMMIT WITH COMPONENT "BaseComponent"
+        // this establishes the common ancestor that both branches will diverge from.
+        // both branch-a and branch-b will modify this same component in different ways,
+        // creating the conflict when Git attempts to merge them.
+        modifyView(getDefaultView(vsum), view -> {
+            var system = view.getRootObjects(System.class).iterator().next();
+            var component = ModelFactory.eINSTANCE.createComponent();
+            component.setName("BaseComponent");
+            system.getComponents().add(component);
+        });
+
+        // stage all changes before validation to ensure the commit includes only
+        // the BaseComponent addition and no unrelated files from previous operations
+        git.add().addFilepattern(".").call();
+
+        // trigger pre-commit validation using the real parent commit SHA
+        String parentSha1 = git.getRepository().resolve("HEAD").getName();
+        String baseRequestId = triggerFile.createTrigger(parentSha1, BRANCH_MASTER);
+        waitForBothResultFiles(resultFile, baseRequestId);
+
+        // validation must pass before the commit is allowed to proceed
+        ValidationResult baseResult = resultFile.readResult(baseRequestId);
+        assertTrue(baseResult.isValid(), "base commit with BaseComponent must pass validation");
+        resultFile.deleteResult(baseRequestId);
+
+        // create the real Git commit and extract its SHA for the post-commit trigger
+        var baseCommit = git.commit()
+                .setMessage("Add BaseComponent")
+                .setAuthor("Vitruvius", "vitruv-dev@example.com")
+                .call();
+        String baseCommitSha = baseCommit.getName();
+
+        // simulate post-commit hook execution: write the trigger with the real commit SHA
+        // so VsumPostCommitWatcher can generate a changelog with traceable SHA
+        postCommitTrigger.createTrigger(baseCommitSha, BRANCH_MASTER);
+
+        // wait for VsumPostCommitWatcher to write the changelog file to disk
+        Path baseChangelog = tempDir.resolve(".vitruvius/changelogs/" + baseCommitSha.substring(0, 7) + ".txt");
+        waitUntilFileExists(baseChangelog, 2000);
+
+        // 2. STEP: BRANCH A - RENAME "BaseComponent" TO "ServiceA"
+        // create branch-a from master and switch to it. BranchManager automatically
+        // triggers VSUM reload via PostCheckoutHandler.onBranchSwitch().
+        branchMgr.createBranch("branch-a", "master");
+        branchMgr.switchBranch("branch-a");
+
+        // after VSUM reload, a fresh view must be obtained to see the current branch state.
+        // modifying the Component to ServiceA on this branch while branch-b will independently
+        // modify it to ServiceB, creating the conflict.
+        modifyView(getDefaultView(vsum), view -> {
+            var system = view.getRootObjects(System.class).iterator().next();
+            var component = system.getComponents().get(0);
+            assertEquals("BaseComponent", component.getName(), "branch-a must start with BaseComponent from the base commit");
+            component.setName("ServiceA");
+        });
+
+        // stage changes and trigger validation with real parent SHA
+        git.add().addFilepattern(".").call();
+        String parentShaA = git.getRepository().resolve("HEAD").getName();
+        String requestIdA = triggerFile.createTrigger(parentShaA, "branch-a");
+        waitForBothResultFiles(resultFile, requestIdA);
+
+        // validation passes: ServiceA is a valid model state
+        assertTrue(resultFile.readResult(requestIdA).isValid(), "branch-a commit with ServiceA must pass validation");
+        resultFile.deleteResult(requestIdA);
+
+        // commit on branch-a with the real SHA, then trigger changelog generation
+        var commitA = git.commit()
+                .setMessage("Rename to ServiceA")
+                .setAuthor("Vitruvius", "vitruv-dev@example.com")
+                .call();
+        String commitASha = commitA.getName();
+        postCommitTrigger.createTrigger(commitASha, "branch-a");
+
+        // wait for branch-a changelog to be written
+        Path changelogA = tempDir.resolve(".vitruvius/changelogs/" + commitASha.substring(0, 7) + ".txt");
+        waitUntilFileExists(changelogA, 2000);
+
+        // 3. STEP: BRANCH B - RENAME "BaseComponent" TO "ServiceB" (FROM SAME BASE)
+        // switch back to master, then create branch-b from the same base commit.
+        // this ensures both branch-a and branch-b modified the same component from
+        // the same starting point, which is what causes the merge conflict.
+        branchMgr.switchBranch(BRANCH_MASTER);
+        branchMgr.createBranch("branch-b", "master");
+        branchMgr.switchBranch("branch-b");
+
+        // after reload, the VSUM reflects the master branch state: BaseComponent is present,
+        // and ServiceA does not exist here because it only exists on branch-a.
+        // modify BaseComponent to ServiceB, creating a conflicting change.
+        modifyView(getDefaultView(vsum), view -> {
+            var system = view.getRootObjects(System.class).iterator().next();
+            var component = system.getComponents().get(0);
+            assertEquals("BaseComponent", component.getName(), "branch-b must start with BaseComponent, not ServiceA from branch-a");
+            component.setName("ServiceB");
+        });
+
+        // stage changes and trigger validation
+        git.add().addFilepattern(".").call();
+        String parentShaB = git.getRepository().resolve("HEAD").getName();
+        String requestIdB = triggerFile.createTrigger(parentShaB, "branch-b");
+        waitForBothResultFiles(resultFile, requestIdB);
+
+        // validation passes: ServiceB is valid on its own branch
+        assertTrue(resultFile.readResult(requestIdB).isValid(), "branch-b commit with ServiceB must pass validation");
+        resultFile.deleteResult(requestIdB);
+
+        // commit on branch-b and trigger changelog generation
+        var commitB = git.commit()
+                .setMessage("Rename to ServiceB")
+                .setAuthor("Vitruvius", "vitruv-dev@example.com")
+                .call();
+        String commitBSha = commitB.getName();
+        postCommitTrigger.createTrigger(commitBSha, "branch-b");
+
+        // wait for branch-b changelog to be written
+        Path changelogB = tempDir.resolve(".vitruvius/changelogs/" + commitBSha.substring(0, 7) + ".txt");
+        waitUntilFileExists(changelogB, 2000);
+
+        // 4. STEP: MERGE BRANCH-A INTO BRANCH-B → CONFLICT
+        // Git's three-way merge algorithm sees:
+        //   Common ancestor: BaseComponent
+        //   Branch A:        ServiceA
+        //   Branch B:        ServiceB
+        // Both branches modified the same component name attribute → Git cannot auto-merge
+        // and inserts conflict markers into the XMI file.
+
+        // clean up any stray lock files that might cause the merge to fail with DIRTY_WORKTREE
+        Path validationLock = tempDir.resolve(".vitruvius/.validation.lock");
+        if (Files.exists(validationLock)) {
+            Files.delete(validationLock);
+        }
+
+        // perform the merge: Git will create conflict markers in example.model
+        MergeResult mergeResult = git.merge()
+                .include(git.getRepository().resolve("branch-a"))
+                .call();
+
+        // verify that Git detected the conflict and refused to auto-merge
+        assertEquals(MergeResult.MergeStatus.CONFLICTING, mergeResult.getMergeStatus(), "Git must detect conflicting changes to the same component");
+        assertFalse(mergeResult.getConflicts().isEmpty(), "conflicts map must not be empty when merge fails");
+
+        // 5. STEP: INSPECT XMI FILE - SHOULD CONTAIN GIT CONFLICT MARKERS
+        // read the XMI file from disk to verify that Git inserted the conflict markers.
+        // the file is now invalid XML because it contains <<<<<<<, =======, and >>>>>>> strings.
+        Path xmiFile = tempDir.resolve("example.model");
+        assertTrue(Files.exists(xmiFile), "XMI file must exist after the merge");
+
+        String xmiContent = Files.readString(xmiFile);
+
+        // verify that Git inserted all three conflict marker strings into the XMI file
+        assertTrue(xmiContent.contains("<<<<<<<"), "XMI must contain Git conflict marker '<<<<<<<'");
+        assertTrue(xmiContent.contains("======="), "XMI must contain conflict separator '======='");
+        assertTrue(xmiContent.contains(">>>>>>>"), "XMI must contain Git conflict marker '>>>>>>>'");
+        assertTrue(xmiContent.contains("ServiceA") || xmiContent.contains("ServiceB"), "XMI must contain at least one of the conflicting component names");
+
+        // 6. STEP: POST-MERGE VALIDATION SHOULD DETECT CONFLICT MARKERS
+        // for conflicting merges, Git does not create a merge commit automatically.
+        // the working directory is left in a conflicted state with conflict markers on disk.
+        // we use a placeholder SHA for the trigger since no merge commit was created.
+        String conflictMergeSha = "conflict-" +java.lang.System.currentTimeMillis();
+
+        // simulate post-merge hook execution: write the trigger file manually
+        String mergeRequestId = mergeTrigger.createTrigger(conflictMergeSha, "branch-a", "branch-b");
+
+        // in the background: VsumMergeWatcher detects the trigger, calls PostMergeHandler.validate(),
+        // which scans example.model on disk and finds the conflict markers, then writes the result
+        // and metadata files.
+        waitForMergeResultFiles(mergeResultFile, mergeRequestId, 3000);
+
+        // read the validation result: must fail because the XMI file contains conflict markers
+        ValidationResult mergeValidation = mergeResultFile.readResult(mergeRequestId);
+        assertNotNull(mergeValidation, "merge validation result must be written even when validation fails");
+        assertFalse(mergeValidation.isValid(), "merge with XMI conflict markers must fail validation");
+
+        // verify that the error message specifically mentions conflict markers or the affected file
+        boolean hasConflictError = mergeValidation.getErrors().stream()
+                .anyMatch(e -> e.toLowerCase().contains("conflict") || e.contains("example.model"));
+        assertTrue(hasConflictError, "error message must mention conflict markers or the conflicted file name");
+
+        // 7. STEP: VERIFY METADATA WRITTEN EVEN FOR FAILED MERGE
+        // the permanent merge metadata file must be written regardless of validation outcome (MG-6).
+        // this creates an audit trail showing that the merge was attempted, failed validation,
+        // and requires manual conflict resolution.
+        assertTrue(mergeResultFile.metadataExists(conflictMergeSha), "metadata must be written even when merge validation fails");
+
+        // read and verify the metadata content
+        var metadata = mergeResultFile.readMetadata(conflictMergeSha);
+        assertNotNull(metadata, "metadata must be readable");
+        assertEquals(conflictMergeSha, metadata.get("mergeCommitSha"), "metadata must record the placeholder merge SHA");
+        assertEquals("branch-a", metadata.get("sourceBranch"), "metadata must record branch-a as the source");
+        assertEquals("branch-b", metadata.get("targetBranch"), "metadata must record branch-b as the target");
+        assertEquals(false, metadata.get("valid"), "metadata must show valid=false for conflicted merge");
+    }
+    
     private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs) throws InterruptedException {
         long deadline = java.lang.System.currentTimeMillis() + timeoutMs;
         while (!condition.getAsBoolean() && java.lang.System.currentTimeMillis() < deadline) {
@@ -438,5 +678,22 @@ class VitruviusModelVersioningIntegrationTest {
     private void modifyView(CommittableView view, Consumer<CommittableView> modification) {
         modification.accept(view);
         view.commitChanges();
+    }
+
+    /**
+     * Prints the contents of the example.model XMI file to console
+     * @param label descriptive label for this snapshot
+     */
+    private void printXmiFile(String label) throws IOException {
+        Path xmiFile = tempDir.resolve("example.model");
+        if (Files.exists(xmiFile)) {
+            java.lang.System.out.println("\n" + "-".repeat(70));
+            java.lang.System.out.println(label);
+            java.lang.System.out.println("-".repeat(70));
+            java.lang.System.out.println(Files.readString(xmiFile));
+            java.lang.System.out.println("-".repeat(70) + "\n");
+        } else {
+            java.lang.System.out.println("\n[" + label + "] XMI file does not exist yet\n");
+        }
     }
 }

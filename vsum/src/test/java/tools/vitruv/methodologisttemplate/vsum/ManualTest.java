@@ -47,10 +47,8 @@ public class ManualTest {
             java.lang.System.err.println("Example: ManualTest C:/Users/user/vitruvius-manual-test");
             java.lang.System.exit(1);
         }
-
         repoRoot = Paths.get(args[0]).toAbsolutePath();
         scanner = new Scanner(java.lang.System.in);
-
         java.lang.System.out.println("VITRUVIUS BRANCHING - INTERACTIVE MANUAL TEST ");
         java.lang.System.out.println();
         java.lang.System.out.println("Repository: " + repoRoot);
@@ -71,25 +69,22 @@ public class ManualTest {
     private static void runInteractiveTest() throws Exception {
         // Step 0: Setup
         java.lang.System.out.println("[0/4] Setting up test environment...");
-
         // Step 1: Initialize VSUM
         java.lang.System.out.println("\n[1/4] Initializing Vitruvius VSUM...");
         initializeVsum();
-
         // Step 2: Install Git hooks
         java.lang.System.out.println("\n[2/4] Installing Git hooks...");
         installGitHooks();
-
         // Step 3: Start background watchers
         java.lang.System.out.println("\n[3/4] Starting background watchers...");
         startBackgroundWatchers();
-
         // Step 4: Interactive menu
-        java.lang.System.out.println("\n[4/4] VSUM initialized successfully!");
+        java.lang.System.out.println("\n[4/4] VSUM initialized successfully.");
         java.lang.System.out.println("You can now perform Git operations and model changes.");
         java.lang.System.out.println();
         showMainMenu();
     }
+
 
     private static void showMainMenu() {
         while (true) {
@@ -102,8 +97,7 @@ public class ManualTest {
             java.lang.System.out.println("5. Rename component");
             java.lang.System.out.println("6. Delete component");
             java.lang.System.out.println("7. Delete all models");
-            java.lang.System.out.println("8. Git operations (branch, merge, etc.)");
-            java.lang.System.out.println("9. Exit");
+            java.lang.System.out.println("8. Exit");
             java.lang.System.out.print("Choose option: ");
 
             String choice = scanner.nextLine().trim();
@@ -117,9 +111,9 @@ public class ManualTest {
                     case "5" -> renameComponent();
                     case "6" -> deleteComponent();
                     case "7" -> deleteAllModels();
-                    case "8" -> gitOperationsMenu();
-                    case "9" -> {
+                    case "8" -> {
                         java.lang.System.out.println("Exiting...");
+                        virtualModel.dispose(); //flush vsum state cleanly
                         return;
                     }
                     default -> java.lang.System.out.println("Invalid option. Try again.");
@@ -140,37 +134,27 @@ public class ManualTest {
             return;
         }
         CommittableView committableView = view.withChangeDerivingTrait(); // state-based delta derivation
-
         // Create System model
         System system = ModelFactory.eINSTANCE.createSystem();
-
         committableView.registerRoot(system, URI.createFileURI(repoRoot.resolve("example.model").toString()));
-
         committableView.commitChanges();
-
-        java.lang.System.out.println("Models created successfully!");
+        java.lang.System.out.println("Models created successfully.");
         java.lang.System.out.println("- example.model (System)");
         java.lang.System.out.println("- example.model2 (Root - created by reactions)");
-        java.lang.System.out.println();
-        java.lang.System.out.println("Now commit these changes:");
-        java.lang.System.out.println("git add .");
-        java.lang.System.out.println("git commit -m \"initial models\"");
     }
 
     private static void viewModels() {
         java.lang.System.out.println("\nCurrent Models");
-
         View view = getDefaultView(virtualModel, List.of(System.class, Root.class));
-
         // View System models
         Collection<System> systems = view.getRootObjects(System.class);
         if (systems.isEmpty()) {
-            java.lang.System.out.println("No models found. Create them first (option 1).");
+            java.lang.System.out.println("No models found. Create them first.");
             return;
         }
 
         for (System system : systems) {
-            java.lang.System.out.println("\nSystem Model (example.model)");
+            java.lang.System.out.println("\nSystem (example.model)");
             java.lang.System.out.println("Components:");
             if (system.getComponents().isEmpty()) {
                 java.lang.System.out.println("(none)");
@@ -178,7 +162,6 @@ public class ManualTest {
                 system.getComponents().forEach(c -> java.lang.System.out.println("- " + c.getName() + " (" + c.eClass().getName() + ")"));
             }
         }
-
         // View Root models
         Collection<Root> roots = view.getRootObjects(Root.class);
         for (Root root : roots) {
@@ -207,94 +190,69 @@ public class ManualTest {
         }
         Component component = ModelFactory.eINSTANCE.createComponent();
         component.setName(name);
-
         systems.iterator().next().getComponents().add(component);
         view.commitChanges();
-
         java.lang.System.out.println("Component '" + name + "' added");
-        java.lang.System.out.println("Hint: Commit with: git commit -am \"add component " + name + "\"");
     }
 
     private static void addRouter() {
         java.lang.System.out.print("\nEnter router name: ");
         String name = scanner.nextLine().trim();
-
         if (name.isEmpty()) {
             java.lang.System.out.println("Name cannot be empty.");
             return;
         }
-
         CommittableView view = getDefaultView(virtualModel, List.of(System.class)).withChangeDerivingTrait();
-
         Collection<System> systems = view.getRootObjects(System.class);
         if (systems.isEmpty()) {
-            java.lang.System.out.println("No system found. Create models first (option 1).");
+            java.lang.System.out.println("No system found. Create models first.");
             return;
         }
-
         Router router = ModelFactory.eINSTANCE.createRouter();
         router.setName(name);
-
         systems.iterator().next().getComponents().add(router);
         view.commitChanges();
-
-        java.lang.System.out.println("Router '" + name + "' added!");
-        java.lang.System.out.println("Hint: Commit with: git commit -am \"add router " + name + "\"");
+        java.lang.System.out.println("Router '" + name + "' added.");
     }
 
     private static void renameComponent() {
-        View view = getDefaultView(virtualModel, List.of(System.class));
-        Collection<System> systems = view.getRootObjects(System.class);
-
+        // Read-only view just for display
+        View readView = getDefaultView(virtualModel, List.of(System.class));
+        Collection<System> systems = readView.getRootObjects(System.class);
         if (systems.isEmpty() || systems.iterator().next().getComponents().isEmpty()) {
-            java.lang.System.out.println("No components found. Add some first (option 3 or 4).");
+            java.lang.System.out.println("No components found.");
             return;
         }
-
+        // Display components from read view
         System system = systems.iterator().next();
-
         java.lang.System.out.println("\nComponents:");
         for (int i = 0; i < system.getComponents().size(); i++) {
-            Component c = system.getComponents().get(i);
-            java.lang.System.out.println("  " + (i + 1) + ". " + c.getName());
+            java.lang.System.out.println("  " + (i + 1) + ". " + system.getComponents().get(i).getName());
         }
-
         java.lang.System.out.print("Select component number: ");
         int index = Integer.parseInt(scanner.nextLine().trim()) - 1;
-
-        if (index < 0 || index >= system.getComponents().size()) {
-            java.lang.System.out.println("Invalid selection.");
-            return;
-        }
-
         java.lang.System.out.print("Enter new name: ");
         String newName = scanner.nextLine().trim();
-
-        CommittableView committableView = view.withChangeDerivingTrait();
+        // Fresh committable view for the modification
+        CommittableView committableView = getDefaultView(virtualModel, List.of(System.class)).withChangeDerivingTrait();
         committableView.getRootObjects(System.class).iterator().next().getComponents().get(index).setName(newName);
         committableView.commitChanges();
-
-        java.lang.System.out.println("Component renamed to '" + newName + "'!");
-        java.lang.System.out.println("Commit with: git commit -am \"rename component to " + newName + "\"");
+        java.lang.System.out.println("Renamed to '" + newName + "'");
     }
 
     private static void deleteComponent() {
         View view = getDefaultView(virtualModel, List.of(System.class));
         Collection<System> systems = view.getRootObjects(System.class);
-
         if (systems.isEmpty() || systems.iterator().next().getComponents().isEmpty()) {
             java.lang.System.out.println("No components found.");
             return;
         }
-
         System system = systems.iterator().next();
-
         java.lang.System.out.println("\nComponents:");
         for (int i = 0; i < system.getComponents().size(); i++) {
             Component c = system.getComponents().get(i);
             java.lang.System.out.println("  " + (i + 1) + ". " + c.getName());
         }
-
         java.lang.System.out.print("Select component number to delete: ");
         int index = Integer.parseInt(scanner.nextLine().trim()) - 1;
 
@@ -302,80 +260,62 @@ public class ManualTest {
             java.lang.System.out.println("Invalid selection.");
             return;
         }
-
         String name = system.getComponents().get(index).getName();
-
-        CommittableView committableView = view.withChangeDerivingTrait();
+        CommittableView committableView = getDefaultView(virtualModel, List.of(System.class)).withChangeDerivingTrait();
         committableView.getRootObjects(System.class).iterator().next().getComponents().remove(index);
         committableView.commitChanges();
-
-        java.lang.System.out.println("Component '" + name + "' deleted!");
-        java.lang.System.out.println("Commit with: git commit -am \"delete component " + name + "\"");
+        java.lang.System.out.println("Component '" + name + "' deleted.");
     }
-    private static void deleteAllModels() {
-        java.lang.System.out.print("\n⚠Are you sure you want to delete ALL models? (yes/no): ");
-        String confirm = scanner.nextLine().trim();
 
-        if (!confirm.equalsIgnoreCase("yes")) {
+    private static void deleteAllModels() {
+        java.lang.System.out.print("\nAre you sure you want to delete ALL models? (yes/no): ");
+        if (!scanner.nextLine().trim().equalsIgnoreCase("yes")) {
             java.lang.System.out.println("Cancelled.");
             return;
         }
-
         CommittableView view = getDefaultView(virtualModel, List.of(System.class)).withChangeDerivingTrait();
-
-        Collection<System> systems = view.getRootObjects(System.class);
+        Collection<System> systems = new java.util.ArrayList<>(view.getRootObjects(System.class));
         if (systems.isEmpty()) {
             java.lang.System.out.println("No models to delete.");
             return;
         }
-
-        List<System> systemsList = new java.util.ArrayList<>(systems);
-
-        for (System system : systemsList) {
+        // Remove all components first
+        for (System system : systems) {
+            system.getComponents().clear();
+        }
+        view.commitChanges();
+        // delete the empty root via a second commit
+        // Clearing components first avoids the dangling containment issue
+        CommittableView view2 = getDefaultView(virtualModel, List.of(System.class)).withChangeDerivingTrait();
+        for (System system : new java.util.ArrayList<>(view2.getRootObjects(System.class))) {
             org.eclipse.emf.ecore.util.EcoreUtil.delete(system, true);
         }
-
-        view.commitChanges();
-
-        java.lang.System.out.println("All models deleted!");
-        java.lang.System.out.println("Commit with: git commit -am \"delete all models\"");
-    }
-
-    private static void gitOperationsMenu() {
-        java.lang.System.out.println("\nGit Operations");
-        java.lang.System.out.println("Perform Git operations in another terminal:");
-        java.lang.System.out.println();
-        java.lang.System.out.println("Common commands:");
-        java.lang.System.out.println("git status");
-        java.lang.System.out.println("git add .");
-        java.lang.System.out.println("git commit -m \"message\"");
-        java.lang.System.out.println("git checkout -b new-branch");
-        java.lang.System.out.println("git checkout master");
-        java.lang.System.out.println("git merge branch-name");
-        java.lang.System.out.println();
-        java.lang.System.out.println("Watch Terminal 1 for validation, changelog, and reload messages!");
-        java.lang.System.out.println();
-        java.lang.System.out.print("Press Enter to return to main menu...");
-        scanner.nextLine();
+        view2.commitChanges();
+        java.lang.System.out.println("All models deleted.");
     }
 
     private static void initializeVsum() throws Exception {
         Resource.Factory.Registry.INSTANCE.getExtensionToFactoryMap().put("*", new XMIResourceFactoryImpl());
+
         virtualModel = new VirtualModelBuilder()
                 .withStorageFolder(repoRoot)
                 .withUserInteractorForResultProvider(new TestUserInteraction.ResultProvider(new TestUserInteraction()))
                 .withChangePropagationSpecifications(new Model2Model2ChangePropagationSpecification())
                 .buildAndInitialize();
         virtualModel.setChangePropagationMode(ChangePropagationMode.TRANSITIVE_CYCLIC);
-        java.lang.System.out.println("VSUM initialized");
+        boolean isResume = Files.exists(repoRoot.resolve("example.model"));
+        java.lang.System.out.println(isResume ? "V-SUM resumed from existing state." : "V-SUM initialized fresh.");
     }
 
     private static void installGitHooks() throws Exception {
         GitHookInstaller hookInstaller = new GitHookInstaller(repoRoot);
-        hookInstaller.installAllHooks();
-        java.lang.System.out.println("Git hooks installed");
+        if (hookInstaller.areAllHooksInstalled()) {
+            java.lang.System.out.println("Git hooks already installed, skipping.");
+        } else {
+            hookInstaller.installAllHooks();
+            java.lang.System.out.println("Git hooks installed.");
+        }
         createMasterMetadataIfNeeded();
-
     }
 
     private static void createMasterMetadataIfNeeded() throws IOException {

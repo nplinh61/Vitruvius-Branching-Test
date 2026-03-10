@@ -30,28 +30,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Integration tests for per-branch VSUM state isolation.
- *
- * <p>Verifies that each Git branch maintains its own independent VSUM state
- * (UUID mappings and correspondence model) under .vitruvius/vsum/{branchName}/.
- * When switching branches, the VSUM reloads from the new branch's folder,
- * ensuring model consistency reflects the checked-out branch content.
- *
- * <p>Note on test scope: these tests use JGit directly and therefore do not
- * exercise the Git hook pipeline. Specifically:
- * <ul>
- *   <li>Changelog files (.vitruvius/changelogs/{hash7}.txt) are simulated,
- *       not produced by a real post-commit hook</li>
- *   <li>Branch metadata files (.vitruvius/branches/{name}.metadata) are
- *       simulated, not produced by a real post-checkout hook</li>
- *   <li>Merge metadata (.vitruvius/merges/{fullhash}.metadata) is only
- *       created for non-fast-forward merges and is not tested here</li>
- *   <li>The reload trigger file mechanism (VsumReloadWatcher) is bypassed —
- *       PostCheckoutHandler is invoked directly</li>
- * </ul>
- * The full end-to-end hook path is verified manually via ManualTest.
- */
 public class PerBranchVsumTest {
 
     @TempDir
@@ -91,7 +69,7 @@ public class PerBranchVsumTest {
             git.close();
         }
     }
-    
+
     /**
      * Core test: verifies that branch switching correctly isolates VSUM state.
      * Changes made on one branch are not visible on another, and switching
@@ -373,14 +351,12 @@ public class PerBranchVsumTest {
         assertNotEquals(masterSha.substring(0, 7), featureSha.substring(0, 7), "master and feature commits should have different SHAs");
     }
 
-    //  Helpers 
 
     /**
      * Simulates what PostCheckoutHandler does after a branch switch.
      * In production, this is triggered by the post-checkout hook via
      * VsumReloadWatcher. Here we call it directly to test core logic
      * without needing a real shell hook.
-     *
      * Also simulates the branch metadata file creation that the
      * post-checkout hook would normally perform.
      */
@@ -485,7 +461,7 @@ public class PerBranchVsumTest {
     /**
      * Simulates what the post-checkout hook writes for branch metadata.
      * Structure: .vitruvius/branches/{branchName}.metadata
-     *
+     * <p>
      * In production this is written by the post-checkout bash script.
      * In tests we simulate it so that any code reading metadata files
      * does not fail with a missing file.
@@ -510,7 +486,7 @@ public class PerBranchVsumTest {
     /**
      * Simulates what the post-commit hook writes for changelogs.
      * Structure: .vitruvius/changelogs/{first7charsOfSha}.txt
-     *
+     * <p>
      * In production this is written by the post-commit bash script.
      * In tests we simulate it to verify the expected file structure.
      */

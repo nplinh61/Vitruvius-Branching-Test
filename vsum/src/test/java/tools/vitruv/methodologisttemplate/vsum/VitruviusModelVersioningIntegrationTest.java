@@ -212,7 +212,7 @@ class VitruviusModelVersioningIntegrationTest {
 
         // on the command line, "git checkout" would fire the post-checkout hook script, which writes .vitruvius/reload-trigger containing the new branch name.
         // JGit does not execute hook scripts, so we write the trigger file manually here.
-        reloadTrigger.createTrigger(BRANCH_FEAT);
+        reloadTrigger.createTrigger(BRANCH_FEAT, BRANCH_MASTER);
 
         // in the background: VsumReloadWatcher detects the trigger file (within 500ms), calls PostCheckoutHandler.reload()
         // -> VirtualModelImpl.reload() -> ResourceRepositoryImpl -> reloads all .xmi model files from disk, then deletes the trigger file.
@@ -272,7 +272,7 @@ class VitruviusModelVersioningIntegrationTest {
         // 5.STEP: Developer switches back to master
         // same reload flow as step 3: real JGit checkout -> post-checkout hook simulated -> VsumReloadWatcher reloads the VSUM back to the main branch model state.
         git.checkout().setName(BRANCH_MASTER).call();
-        reloadTrigger.createTrigger(BRANCH_MASTER);
+        reloadTrigger.createTrigger(BRANCH_MASTER, BRANCH_FEAT);
         waitUntil(() -> !reloadTrigger.exists(), 2000);
         assertFalse(reloadTrigger.exists(), "reload trigger must be consumed by VsumReloadWatcher after switching back to main");
 

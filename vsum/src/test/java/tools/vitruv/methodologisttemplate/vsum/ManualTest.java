@@ -54,15 +54,25 @@ public class ManualTest {
         java.lang.System.out.println("Repository: " + repoRoot);
         java.lang.System.out.println();
 
+        // Register shutdown hook for Ctrl+C
+        // ensures V-SUM is disposed cleanly
+        // even if the user kills the process instead of using option 9
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (virtualModel != null) {
+                try {
+                    virtualModel.dispose();
+                    java.lang.System.out.println("\nV-SUM disposed cleanly on shutdown.");
+                } catch (Exception e) {
+                    java.lang.System.err.println("Failed to dispose V-SUM on shutdown: " + e.getMessage());
+                }
+            }
+        }));
+
         try {
             runInteractiveTest();
         } catch (Exception e) {
             java.lang.System.err.println("\nError: " + e.getMessage());
             e.printStackTrace();
-        } finally {
-            java.lang.System.out.println("\n");
-            java.lang.System.out.println("Press Ctrl+C to stop the manual test and all watchers.");
-            Thread.currentThread().join(); // keep the program running
         }
     }
 
@@ -296,6 +306,12 @@ public class ManualTest {
 
     private static void initializeVsum() throws Exception {
         Resource.Factory.Registry.INSTANCE.getExtensionToFactoryMap().put("*", new XMIResourceFactoryImpl());
+        // Register EMF packages needed for standalone execution.
+        // In Eclipse/OSGi these are auto-registered via plugin.xml.
+        // In standalone IntelliJ, static initializers must be triggered manually
+        // before buildAndInitialize() tries to load the existing correspondence file.
+        tools.vitruv.change.correspondence.CorrespondencePackage.eINSTANCE.eClass();
+        tools.vitruv.dsls.reactions.runtime.correspondence.CorrespondencePackage.eINSTANCE.eClass();
 
         virtualModel = new VirtualModelBuilder()
                 .withStorageFolder(repoRoot)
@@ -309,13 +325,10 @@ public class ManualTest {
 
     private static void installGitHooks() throws Exception {
         GitHookInstaller hookInstaller = new GitHookInstaller(repoRoot);
-        if (hookInstaller.areAllHooksInstalled()) {
-            java.lang.System.out.println("Git hooks already installed, skipping.");
-        } else {
-            hookInstaller.installAllHooks();
-            java.lang.System.out.println("Git hooks installed.");
-        }
+        hookInstaller.installAllHooks();
+        java.lang.System.out.println("Git hooks installed");
         createMasterMetadataIfNeeded();
+
     }
 
     private static void createMasterMetadataIfNeeded() throws IOException {

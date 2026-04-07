@@ -1,5 +1,5 @@
 package tools.vitruv.methodologisttemplate.vsum;
-
+import tools.vitruv.framework.vsum.branch.BranchAwareVirtualModel;
 import mir.reactions.model2Model2.Model2Model2ChangePropagationSpecification;
 import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.resource.Resource;
@@ -37,7 +37,7 @@ import java.util.Scanner;
  */
 public class ManualTest {
 
-    private static InternalVirtualModel virtualModel;
+    private static BranchAwareVirtualModel virtualModel;
     private static Path repoRoot;
     private static Scanner scanner;
 
@@ -313,22 +313,27 @@ public class ManualTest {
         tools.vitruv.change.correspondence.CorrespondencePackage.eINSTANCE.eClass();
         tools.vitruv.dsls.reactions.runtime.correspondence.CorrespondencePackage.eINSTANCE.eClass();
 
-        virtualModel = new VirtualModelBuilder()
+        InternalVirtualModel innerModel = (InternalVirtualModel) new VirtualModelBuilder()
                 .withStorageFolder(repoRoot)
                 .withUserInteractorForResultProvider(new TestUserInteraction.ResultProvider(new TestUserInteraction()))
                 .withChangePropagationSpecifications(new Model2Model2ChangePropagationSpecification())
                 .buildAndInitialize();
-        virtualModel.setChangePropagationMode(ChangePropagationMode.TRANSITIVE_CYCLIC);
+        innerModel.setChangePropagationMode(ChangePropagationMode.TRANSITIVE_CYCLIC);
+        virtualModel = new BranchAwareVirtualModel(repoRoot, innerModel);
         boolean isResume = Files.exists(repoRoot.resolve("example.model"));
+        java.lang.System.out.println("Active branch: " + virtualModel.getActiveBranch());
         java.lang.System.out.println(isResume ? "V-SUM resumed from existing state." : "V-SUM initialized fresh.");
     }
 
     private static void installGitHooks() throws Exception {
         GitHookInstaller hookInstaller = new GitHookInstaller(repoRoot);
-        hookInstaller.installAllHooks();
-        java.lang.System.out.println("Git hooks installed");
+        if (hookInstaller.areAllHooksInstalled()) {
+            java.lang.System.out.println("Git hooks already installed, skipping.");
+        } else {
+            hookInstaller.installAllHooks();
+            java.lang.System.out.println("Git hooks installed.");
+        }
         createMasterMetadataIfNeeded();
-
     }
 
     private static void createMasterMetadataIfNeeded() throws IOException {
@@ -361,6 +366,10 @@ public class ManualTest {
         java.lang.System.out.println("Validation watcher started");
 
         VsumPostCommitWatcher postCommitWatcher = new VsumPostCommitWatcher(repoRoot);
+        postCommitWatcher.attachSemanticChangeTracking(
+                virtualModel.getChangeBuffer(),
+                virtualModel.getUuidResolver(),
+                virtualModel::getViewSourceModels);
         postCommitWatcher.start();
         java.lang.System.out.println("Post-commit watcher started");
 

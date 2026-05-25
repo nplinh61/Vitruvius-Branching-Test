@@ -74,5 +74,18 @@
             <artifactId>gson</artifactId>
             <version>2.10.1</version>
         </dependency>
+        <!-- Brake-system case study metamodel and consistency rules (test scope) -->
+        <dependency>
+            <groupId>tools.vitruv.casestudy</groupId>
+            <artifactId>tools.vitruv.casestudy.brakesystem.model</artifactId>
+            <version>0.1.0-SNAPSHOT</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>tools.vitruv.casestudy</groupId>
+            <artifactId>tools.vitruv.casestudy.brakesystem.consistency</artifactId>
+            <version>0.1.0-SNAPSHOT</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

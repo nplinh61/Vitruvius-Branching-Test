@@ -18,6 +18,7 @@ import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
 import tools.vitruv.framework.vsum.branch.handler.PostCheckoutHandler;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
+import tools.vitruv.methodologisttemplate.model.model.Component;
 import tools.vitruv.methodologisttemplate.model.model.ModelFactory;
 import tools.vitruv.methodologisttemplate.model.model.System;
 import tools.vitruv.methodologisttemplate.model.model2.Root;
@@ -30,6 +31,18 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Unit-level integration tests for per-branch VSUM isolation.
+ *
+ * <p>Verifies that {@link tools.vitruv.framework.vsum.branch.handler.PostCheckoutHandler}
+ * correctly isolates each branch's VSUM state (model files, UUID registry,
+ * correspondence model) under {@code .vitruvius/vsum/{branchName}/}, and that
+ * branch metadata and changelog files are created with the expected structure.
+ *
+ * <p>These tests use a real JGit repository and real EMF models, but call
+ * {@link #switchVsumToBranch} directly instead of relying on a shell hook,
+ * so no background watcher threads are started.
+ */
 public class PerBranchVsumTest {
 
     @TempDir
@@ -37,18 +50,27 @@ public class PerBranchVsumTest {
 
     private InternalVirtualModel virtualModel;
     private Git git;
+    private PostCheckoutHandler checkoutHandler;
 
     @BeforeAll
     static void setupResourceFactories() {
+        // Required for EMF to serialize and deserialize XMI model files (.model).
+        // Without this, Resource.createResource() returns null and commitChanges() throws NPE.
         Resource.Factory.Registry.INSTANCE.getExtensionToFactoryMap().put("*", new XMIResourceFactoryImpl());
     }
 
     @BeforeEach
     void setup() throws Exception {
         // Initialize a real Git repository so JGit branch resolution works.
-        // An initial empty commit is required so that HEAD resolves to a branch name.
+        // An initial commit (adding .gitignore) is required so that HEAD resolves to a branch
+        // name before VSUM initialisation; setAllowEmpty(false) enforces this.
         git = Git.init().setDirectory(repoRoot.toFile()).call();
-        git.commit().setMessage("init").setAllowEmpty(true).setAuthor("Test", "test@test.com").call();
+        // Exclude .vitruvius/ from git tracking so branch switches never conflict with
+        // Vitruvius-internal files (branch metadata, per-branch vsum state).
+        // VSUM state is managed per-branch by directory (not by git checkout).
+        Files.writeString(repoRoot.resolve(".gitignore"), ".vitruvius/\n");
+        git.add().addFilepattern(".gitignore").call();
+        git.commit().setMessage("init").setAllowEmpty(false).setAuthor("Test", "test@test.com").call();
 
         // Initialize VSUM, VsumFileSystemLayout reads "master"
         // from JGit and creates .vitruvius/vsum/master/
@@ -58,6 +80,11 @@ public class PerBranchVsumTest {
                 .withChangePropagationSpecifications(new Model2Model2ChangePropagationSpecification())
                 .buildAndInitialize();
         virtualModel.setChangePropagationMode(ChangePropagationMode.TRANSITIVE_CYCLIC);
+        // Create the handler once here (before any feature branches) so that
+        // initializeMissingMetadata() commits master.metadata into master's git tree first.
+        // Feature branches created later inherit master's tree and therefore also contain
+        // master.metadata, preventing "duplicate stage" errors on subsequent switches.
+        checkoutHandler = new PostCheckoutHandler(virtualModel);
     }
 
     @AfterEach
@@ -77,14 +104,14 @@ public class PerBranchVsumTest {
      */
     @Test
     void branchSwitchIsolatesVsumState() throws Exception {
-        // Step 1: on master, create System + ComponentA
+        //1.step: On master, create System and ComponentA.
         createSystem();
         addComponent("ComponentA");
         commitAll("master: add ComponentA");
 
         assertEquals(1, getComponentCount(), "master should have 1 component after adding ComponentA");
 
-        //  Step 2: create feature branch, add ComponentB 
+        //2.step: Create feature branch and add ComponentB.
         git.checkout().setCreateBranch(true).setName("feature").call();
         switchVsumToBranch("master");
 
@@ -93,7 +120,7 @@ public class PerBranchVsumTest {
 
         assertEquals(2, getComponentCount(), "feature should have 2 components (ComponentA + ComponentB)");
 
-        //  Step 3: switch back to master 
+        //3.step: Switch back to master.
         git.checkout().setName("master").call();
         switchVsumToBranch("feature");
 
@@ -102,13 +129,13 @@ public class PerBranchVsumTest {
         String nameOnMaster = getComponentNames().get(0);
         assertEquals("ComponentA", nameOnMaster, "master's only component should be ComponentA, not ComponentB");
 
-        //  Step 4: switch back to feature -
+        //4.step: Switch back to feature.
         git.checkout().setName("feature").call();
         switchVsumToBranch("master");
 
         assertEquals(2, getComponentCount(), "feature should still have 2 components after switching back");
 
-        //  Step 5: verify correspondence model is also branch-specific -
+        //5.step: Verify that the correspondence model is also branch-specific.
         // Reactions create an Entity in model2 for each Component in model.
         // If correspondences were shared, adding ComponentB would have failed
         // silently (no mRoot found). Checking entity count verifies reactions fired.
@@ -305,7 +332,7 @@ public class PerBranchVsumTest {
 
     /**
      * Verifies that changelog files are created under
-     * .vitruvius/changelogs/{hash7}.txt after each commit.
+     * .vitruvius/changelogs/{branch}/json/{hash7}.json after each commit.
      * In tests, changelog creation is simulated since hooks do not run via JGit.
      */
     @Test
@@ -316,9 +343,10 @@ public class PerBranchVsumTest {
         // Simulate what the post-commit hook writes
         createChangelogEntry(commitSha);
 
-        Path changelogFile = repoRoot.resolve(".vitruvius/changelogs").resolve(commitSha.substring(0, 7) + ".txt");
+        String branch = safeGetCurrentBranch();
+        Path changelogFile = repoRoot.resolve(".vitruvius/changelogs").resolve(branch).resolve("json").resolve(commitSha.substring(0, 7) + ".json");
 
-        assertTrue(Files.exists(changelogFile), ".vitruvius/changelogs/{hash7}.txt should exist after commit");
+        assertTrue(Files.exists(changelogFile), ".vitruvius/changelogs/{branch}/json/{hash7}.json should exist after commit");
 
         String content = Files.readString(changelogFile);
         assertTrue(content.contains(commitSha), "changelog should reference the commit SHA");
@@ -341,8 +369,8 @@ public class PerBranchVsumTest {
         createChangelogEntry(featureSha);
 
         // Both changelog files must exist independently
-        Path masterChangelog = repoRoot.resolve(".vitruvius/changelogs").resolve(masterSha.substring(0, 7) + ".txt");
-        Path featureChangelog = repoRoot.resolve(".vitruvius/changelogs").resolve(featureSha.substring(0, 7) + ".txt");
+        Path masterChangelog = repoRoot.resolve(".vitruvius/changelogs").resolve("master").resolve("json").resolve(masterSha.substring(0, 7) + ".json");
+        Path featureChangelog = repoRoot.resolve(".vitruvius/changelogs").resolve("feature").resolve("json").resolve(featureSha.substring(0, 7) + ".json");
 
         assertTrue(Files.exists(masterChangelog), "master changelog should exist");
         assertTrue(Files.exists(featureChangelog), "feature changelog should exist");
@@ -362,12 +390,7 @@ public class PerBranchVsumTest {
      */
     private void switchVsumToBranch(String fromBranch) throws Exception {
         String toBranch = getCurrentBranchName();
-
-        // Simulate what post-checkout hook writes for branch metadata
-        createBranchMetadata(toBranch, fromBranch);
-
-        PostCheckoutHandler handler = new PostCheckoutHandler(virtualModel);
-        handler.onBranchSwitch(fromBranch, toBranch);
+        checkoutHandler.onBranchSwitch(fromBranch, toBranch);
     }
 
     /**
@@ -420,7 +443,7 @@ public class PerBranchVsumTest {
     private List<String> getComponentNames() {
         Collection<System> systems = getView(List.of(System.class)).getRootObjects(System.class);
         if (systems.isEmpty()) return List.of();
-        return systems.iterator().next().getComponents().stream().map(c -> c.getName()).toList();
+        return systems.iterator().next().getComponents().stream().map(Component::getName).toList();
     }
 
     /**
@@ -459,12 +482,12 @@ public class PerBranchVsumTest {
     }
 
     /**
-     * Simulates what the post-checkout hook writes for branch metadata.
-     * Structure: .vitruvius/branches/{branchName}.metadata
-     * <p>
-     * In production this is written by the post-checkout bash script.
-     * In tests we simulate it so that any code reading metadata files
-     * does not fail with a missing file.
+     * Test utility for manually injecting a branch metadata file at
+     * {@code .vitruvius/branches/{branchName}.metadata}.
+     *
+     * <p>In production, metadata is written by {@link PostCheckoutHandler#onBranchSwitch},
+     * so the active tests do not call this method directly. It is available as a fallback
+     * for scenarios that need to pre-populate metadata before calling the handler.
      */
     private void createBranchMetadata(String branchName, String parentBranch)
             throws IOException {
@@ -484,17 +507,19 @@ public class PerBranchVsumTest {
     }
 
     /**
-     * Simulates what the post-commit hook writes for changelogs.
-     * Structure: .vitruvius/changelogs/{first7charsOfSha}.txt
+     * Simulates what SemanticChangelogManager writes for changelogs.
+     * Structure: .vitruvius/changelogs/{branch}/json/{first7charsOfSha}.json
      * <p>
-     * In production this is written by the post-commit bash script.
+     * In production this is written by PostCommitHandler via SemanticChangelogManager.
      * In tests we simulate it to verify the expected file structure.
      */
     private void createChangelogEntry(String fullSha) throws IOException {
         String shortSha = fullSha.substring(0, 7);
-        Path changelogFile = repoRoot.resolve(".vitruvius/changelogs").resolve(shortSha + ".txt");
+        String branch = safeGetCurrentBranch();
+        Path changelogFile = repoRoot.resolve(".vitruvius/changelogs").resolve(branch).resolve("json").resolve(shortSha + ".json");
         Files.createDirectories(changelogFile.getParent());
-        Files.writeString(changelogFile, "commit=" + fullSha + "\n" + "branch=" + safeGetCurrentBranch() + "\n" + "timestamp=" + java.time.LocalDateTime.now() + "\n");
+        Files.writeString(changelogFile,
+            "{\"formatVersion\":\"1.0\",\"commit\":{\"sha\":\"" + fullSha + "\",\"branch\":\"" + branch + "\"}}");
     }
 
     private String safeGetCurrentBranch() {

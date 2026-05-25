@@ -368,7 +368,7 @@ public class ManualTest {
         VsumPostCommitWatcher postCommitWatcher = new VsumPostCommitWatcher(repoRoot);
         postCommitWatcher.attachSemanticChangeTracking(
                 virtualModel.getChangeBuffer(),
-                virtualModel.getUuidResolver(),
+                virtualModel::getUuidResolver,
                 virtualModel::getViewSourceModels);
         postCommitWatcher.start();
         java.lang.System.out.println("Post-commit watcher started");
